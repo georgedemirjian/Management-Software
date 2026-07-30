@@ -5,8 +5,12 @@ single landlord managing ~80 tenants across multiple properties held in
 multiple LLCs; architected so it can evolve into a multi-tenant SaaS platform
 without a rewrite.
 
-**Current phase: foundation only.** No business features are implemented yet —
-this repo contains the project skeleton, tooling, and infrastructure wiring.
+**Current phase: foundation + auth + domain model (Phases 1–3).** The
+project skeleton, the authentication/authorization layer, and the complete
+database layer (organizations, LLCs, properties, units, tenants, leases,
+charges, payments, documents) are in place. There are **no CRUD pages or
+business workflows yet** — Phase 3 is schema, migrations, validation, and
+seed data only.
 
 ## Tech stack
 
@@ -16,7 +20,7 @@ this repo contains the project skeleton, tooling, and infrastructure wiring.
 | Language          | TypeScript (strict + extra safety flags) |
 | Styling           | Tailwind CSS v4 + shadcn/ui (Base UI)    |
 | Data              | Prisma 7 + PostgreSQL                    |
-| Auth              | Better Auth (placeholder wiring)         |
+| Auth              | Better Auth (email/password + roles)     |
 | Client data       | TanStack Query v5                        |
 | Forms             | React Hook Form + Zod v4                 |
 | Documents (later) | Cloudflare R2                            |
@@ -35,16 +39,31 @@ cp .env.example .env        # then fill in values (see comments in the file)
 
 # 3. Start Postgres — pick one:
 npm run db:up               #   a) Docker (uses docker-compose.yml)
-npx prisma dev              #   b) Prisma local dev server (no Docker needed)
-                            #   c) hosted Postgres (Neon, Prisma Postgres, …)
-                            #      — put its URL in DATABASE_URL
+                            #   b) hosted Postgres (Neon, Supabase, …) —
+                            #      put its URL in DATABASE_URL (hosted DBs
+                            #      also need SHADOW_DATABASE_URL for
+                            #      `migrate dev`)
 
-# 4. Create the database schema
-npm run db:migrate -- --name init
+# 4. Apply migrations
+npm run db:migrate
 
-# 5. Run the app
+# 5. Seed: LANDLORD account + demo portfolio (reads SEED_* from .env)
+npm run db:seed
+
+# 6. Run the app and sign in at /login
 npm run dev                 # http://localhost:3000
 ```
+
+There is **no public registration**: the seed script creates the first
+LANDLORD; every other account will be provisioned by a landlord through the
+admin APIs in a later phase.
+
+The seed also creates a realistic demo portfolio (2 LLCs, 5 properties,
+11 units, 10 tenants, 10 leases across every lifecycle state, and a
+financially consistent charge/payment ledger). Two demo tenants have portal
+accounts: `alice.tenant@example.com` / `marcus.tenant@example.com`, password
+`tenant-dev-password-123`. The domain seed is skipped if the organization
+already exists; `npx prisma migrate reset` wipes and re-seeds everything.
 
 ## Scripts
 
@@ -59,6 +78,7 @@ npm run dev                 # http://localhost:3000
 | `npm run format` / `format:check` | Prettier                                      |
 | `npm run db:up` / `db:down`       | Start/stop the Docker Postgres                |
 | `npm run db:migrate`              | Create + apply a dev migration                |
+| `npm run db:seed`                 | Seed LANDLORD + demo portfolio (idempotent)   |
 | `npm run db:deploy`               | Apply committed migrations (prod/CI)          |
 | `npm run db:push`                 | Push schema without a migration (prototyping) |
 | `npm run db:generate`             | Regenerate the Prisma client                  |
@@ -67,28 +87,37 @@ npm run dev                 # http://localhost:3000
 ## Project structure
 
 ```
-prisma/                 Prisma schema + migrations
-prisma.config.ts        Prisma 7 CLI config (loads .env)
+prisma/                 Prisma schema + migrations + seed.ts (landlord/org)
+                        + seed-domain.ts (demo portfolio + ledger)
+prisma.config.ts        Prisma 7 CLI config (loads .env, wires seed)
 docker-compose.yml      Local Postgres 17
 src/
+  proxy.ts              Optimistic route guarding (see Authorization model)
   app/                  Routes, layouts, route handlers. Thin: composes
                         feature code, contains no business logic itself.
+    (marketing)/        Public pages with the marketing navbar (/)
+    (auth)/login/       Sign-in page (public)
+    dashboard/          Protected app shell: sidebar + topbar + pages
     api/auth/[...all]/  Better Auth HTTP handler
+    api/me/             Example protected JSON endpoint
     providers.tsx       Client providers (TanStack Query, next-themes)
   components/
     ui/                 shadcn/ui primitives (owned source, edit freely)
-    layout/             App chrome: navbar, theme toggle
-  features/             Domain modules (properties, tenants, leases, …) —
-                        see src/features/README.md for the internal layout
+    layout/             App chrome: navbar, sidebar, topbar menus
+  features/             Domain modules — see src/features/README.md
+    auth/               Login form + its validation schema
   hooks/                Shared cross-domain React hooks
   lib/                  Shared utilities usable everywhere:
                         env.ts (validated env), utils.ts (cn),
-                        query-client.ts, auth-client.ts (browser auth)
+                        query-client.ts, auth-client.ts (browser auth),
+                        permissions.ts (Better Auth access control)
   server/               Server-only code — never import from Client
-                        Components: db.ts (Prisma), auth.ts (Better Auth)
+                        Components: db.ts (Prisma), auth.ts (Better Auth),
+                        auth-helpers.ts (page guards), api.ts (API guards)
   services/             Clients for external systems (Stripe, R2, email —
                         added in later phases)
-  types/                Global/shared TypeScript types
+  types/                Global/shared TypeScript types (auth roles, API
+                        wire shapes)
   validation/           Shared Zod schemas + helpers (domain-specific
                         schemas live inside their feature)
   generated/            Prisma client output (gitignored, rebuilt by
@@ -136,27 +165,146 @@ so dev hot-reload doesn't leak connection pools. _Alternative:_ Drizzle is
 lighter and closer to SQL; Prisma was chosen per spec and for its migration
 story and schema readability.
 
-### Better Auth (placeholder wiring)
+### Better Auth (production email/password, no public registration)
 
 `src/server/auth.ts` configures Better Auth with the Prisma adapter; its
 handler is mounted at `/api/auth/[...all]`; `src/lib/auth-client.ts` is the
-browser client. Its four tables (`user`, `session`, `account`, `verification`)
-were generated by the Better Auth CLI. There is deliberately no sign-in UI
-yet. **Multi-LLC plan:** when organizations become a feature, add Better
-Auth's `organization` plugin and model each LLC as an organization — that is
-also the SaaS tenancy seam. _Alternatives:_ NextAuth/Auth.js (weaker typed
-server API), Clerk (fastest to ship, but vendor-holds your user table, which
-conflicts with the SaaS goal).
+browser client. Decisions, in rough order of importance:
 
-### Multi-tenancy strategy (decided now, implemented later)
+- **`disableSignUp: true`** — accounts exist only by provisioning: the seed
+  script creates the first LANDLORD, and later phases create tenants via the
+  admin plugin's `createUser` (server-side calls without request headers are
+  its sanctioned provisioning path — Better Auth's own password hashing, no
+  raw inserts).
+- **`admin` plugin** — supplies the `role` column, ban semantics, and the
+  user-management API the landlord will use to create tenant accounts.
+  Custom role names require an access-control definition, which lives in
+  `src/lib/permissions.ts` (client-importable by design); domain resources
+  (e.g. `property: ["create", …]`) get added to its `statement` in later
+  phases. Configured with `defaultRole: "TENANT"`, `adminRoles: ["LANDLORD"]`.
+- **Roles are a Postgres enum** (`UserRole`), not the generated `String?` —
+  the DB rejects junk. Mirrored by `src/types/auth.ts`; rerunning the Better
+  Auth CLI generator will try to revert this field — review that diff.
+- **Session `cookieCache` (5 min)** — most session checks are served from a
+  signed cookie without touching Postgres. Trade-off: bans/revocations can
+  take up to 5 minutes to reach already-issued cookies.
+- **Rate limiting stored in the database** — the default in-memory store
+  neither survives restarts nor is shared across serverless instances.
+- **No email verification / password reset yet, deliberately** — both are
+  useless without an email provider (`src/services/email` doesn't exist),
+  and with registration disabled there's no unverified-signup threat. They
+  arrive with tenant invitations.
+- **`organization` plugin (adopted in Phase 3)** — configured with
+  `allowUserToCreateOrganization: false` (organizations are provisioned by
+  seed/onboarding, never self-created) and a session `databaseHook` that
+  sets `activeOrganizationId` at sign-in from the user's membership.
+  Members are **staff only**; tenant users are never members (they reach
+  their own data through `Tenant.userId`).
 
-Single database, shared tables, **row-level scoping**: every domain table will
-carry an `organizationId` (LLC) foreign key from the day it is created, and
-every query goes through a scoped helper. This is the one decision that is
-prohibitively expensive to retrofit — writing unscoped tables "for now" is the
-rewrite we are avoiding. _Alternatives:_ schema-per-tenant or database-per-
-tenant isolate harder but explode operational cost at SaaS scale; Postgres RLS
-can be layered onto this design later as defense in depth.
+_Alternatives:_ NextAuth/Auth.js (weaker typed server API), Clerk (fastest
+to ship, but vendor-holds your user table, which conflicts with the SaaS
+goal).
+
+### Authorization model
+
+Three layers, from cosmetic to authoritative:
+
+1. **`src/proxy.ts`** — _optimistic only._ Checks session-cookie presence
+   (not validity — cookies can be forged) to bounce signed-out visitors off
+   `/dashboard/*` (with a `redirectTo` return path) and signed-in users off
+   `/login`. Never treat it as security.
+2. **Pages, layouts, Server Actions** — `requireAuth()` / `requireRole()` /
+   `requireLandlord()` / `requireTenant()` / `requireOrg()` from
+   `src/server/auth-helpers.ts` redirect unauthenticated users to `/login`
+   and wrong-role users to `/dashboard`. `getCurrentSession()` is
+   request-cached, so layout + page both calling it costs one lookup.
+   **Every protected page calls a guard itself** — a layout check alone does
+   not cover client-side navigation to sibling pages.
+3. **API route handlers** — `requireApiAuth()` / `requireApiRole()` /
+   `requireApiOrg()` from `src/server/api.ts` throw typed errors; the
+   `apiHandler` wrapper converts them to the standardized JSON shape in
+   `src/types/api.ts` (`401 UNAUTHORIZED`, `403 FORBIDDEN`) and converts
+   unexpected errors to an opaque 500. See `src/app/api/me/route.ts` for the
+   canonical pattern.
+4. **Data access (from Phase 4 on)** — every domain query filters by the
+   `organizationId` returned from `requireOrg()`/`requireApiOrg()`. Client
+   input never contains organization ids.
+
+Public routes: `/`, `/login`, `/api/auth/*`. Protected: `/dashboard/*` and
+all future API routes except the auth handler.
+
+### Ownership hierarchy & tenancy (Phase 3 — supersedes earlier notes)
+
+```
+Organization (Better Auth — the management business, the SaaS boundary)
+  └─ Llc (legal entity holding title — an accounting grouping, NOT an
+     │    access boundary; properties can move between LLCs freely)
+     └─ Property ─ Unit ─ Lease ─┬─ LeaseTenant ─ Tenant (person record,
+                                 │                optional userId link)
+                                 ├─ Charge ─┐
+                                 ├─ Payment ┴─ PaymentAllocation
+                                 └─ Document
+```
+
+**Correction of an earlier decision:** Phases 1–2 said "LLC = organization."
+That was wrong, and Phase 3 reverses it. LLCs are mutable legal fixtures —
+landlords restructure them routinely — so making them the isolation boundary
+would turn every restructure into a cross-tenant migration, force staff into
+per-LLC memberships, and put consolidated reporting at war with the
+isolation model. The Better Auth organization is the management _business_;
+LLC is a plain domain table under it.
+
+Multi-tenancy is single-database, shared-table, **row-level scoping**: every
+domain table carries `organizationId` — including derivable children
+(`Unit`, `LeaseTenant`, `PaymentAllocation`) — so org-scoped queries never
+need joins and Postgres RLS can be layered on later. The invariant: a
+child's `organizationId` always equals its parent's (seed-verified; server
+functions enforce it by construction because the org id only ever comes
+from `requireOrg()`, never from the client). _Alternatives:_ schema- or
+database-per-tenant isolate harder but explode operational cost; composite
+FKs (`[id, organizationId]` references) would make mismatches impossible at
+the DB level and remain an available hardening step, deferred for the
+relation-plumbing noise they add.
+
+### Domain model & financial records (Phase 3)
+
+- **Tenant ≠ User.** A `Tenant` is an org-scoped person record; most never
+  log in. `Tenant.userId` is linked only when portal access is provisioned.
+  `Lease ↔ Tenant` is many-to-many (`LeaseTenant`) for co-signers and
+  renewals; `isPrimary` marks the primary contact.
+- **Ledger:** `Charge` = money owed, `Payment` = money received,
+  `PaymentAllocation` = which payment settled which charge. Partial payments
+  and one payment covering several charges (Stripe's webhook reality) fall
+  out naturally. `Charge.status` is stored for queryability but derivable
+  from allocation sums — payment-application logic must update both in one
+  transaction.
+- **Append-only financial rows.** `Charge`/`Payment`/`PaymentAllocation`
+  have no `deletedAt` by design: corrections are status changes (`VOIDED`,
+  `WAIVED`, `REFUNDED`), and `Restrict` FKs make deleting an allocated
+  payment or charge fail at the database. Structural rows (`Llc`,
+  `Property`, `Unit`, `Tenant`, `Lease`, `Document`) soft-delete via
+  `deletedAt` — queries must filter `deletedAt: null`.
+- **Money:** integer cents (`*Cents` columns), USD assumed portfolio-wide; a
+  currency column is deliberately deferred until a non-US requirement
+  exists. Civil dates (lease terms, due dates) are `@db.Date` — no timezone
+  drift on "the 1st of the month."
+- **Lifecycle:** leases are created `DRAFT`; `PENDING` (signed, future),
+  `ACTIVE`, `ENDED` (natural), `TERMINATED` (early, with `moveOutDate`).
+  Renewals create a NEW lease linked via `renewedFromId` — history is never
+  mutated. Lifecycle transitions will be dedicated workflows, not free-form
+  status edits.
+- **Documents** carry metadata + a unique `storageKey` (Cloudflare R2
+  later). At most one parent (`propertyId`/`unitId`/`leaseId`/`tenantId`,
+  Zod-enforced); none = organization-level document.
+- **Audit prep:** `createdById` is a plain column with **no FK** — an FK
+  with `SET NULL` would erase authorship exactly when it matters (user
+  deletion). `updatedBy` is deferred to a real audit-log table rather than
+  shipping a column nothing reliably maintains.
+- **Validation:** shared primitives in `src/validation/common.ts`
+  (`centsSchema`, `isoDateSchema`, `dueDaySchema` capped at 28 so the
+  billing day exists in every month); per-entity `z.strictObject` input
+  schemas in `src/features/<domain>/validation/`. Input schemas never
+  accept `organizationId`, ids, or timestamps.
 
 ### shadcn/ui on Base UI
 
@@ -187,21 +335,32 @@ keeps them from fighting. `npm run check` is the single CI gate.
 - All money values are stored as **integer cents**, never floats.
 - Domain writes go through feature `server/` functions validated with Zod —
   never raw Prisma calls from route files.
-- Financial records (rent ledgers, payments) will be append-only/soft-deleted
-  for auditability.
+- Financial records are append-only, structural records soft-delete — see
+  "Domain model & financial records" above for the enforced split.
 
 ## Environment variables
 
 Documented and validated in [`src/lib/env.ts`](src/lib/env.ts); template in
-[`.env.example`](.env.example). Currently: `DATABASE_URL`,
-`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
+[`.env.example`](.env.example). App runtime: `DATABASE_URL`,
+`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`. Tooling-only: `SHADOW_DATABASE_URL`
+(hosted Postgres + `migrate dev`). Seed-only (never read by the app):
+`SEED_LANDLORD_EMAIL`, `SEED_LANDLORD_PASSWORD`, `SEED_LANDLORD_NAME`.
 
 ## Roadmap
 
-1. **Auth UI + organizations** — sign-in pages, Better Auth `organization`
-   plugin, LLCs as organizations, route protection.
-2. **Core domain** — properties, units, tenants, leases (org-scoped from the
-   first migration).
-3. **Rent & payments** — ledgers, Stripe integration (`src/services/stripe`).
-4. **Documents** — Cloudflare R2 (`src/services/storage`).
-5. **Hardening** — Vitest + Playwright, GitHub Actions CI, error monitoring.
+1. ~~**Auth foundation**~~ — done (Phase 2): sign-in/out, roles, guards,
+   route protection, protected dashboard shell, seeded LANDLORD.
+2. ~~**Organizations + domain model**~~ — done (Phase 3): organization
+   plugin, full schema (LLCs → properties → units → leases → tenants +
+   append-only ledger + documents), migrations, Zod schemas, realistic seed.
+3. **CRUD + workflows (next)** — feature server functions (org-scoped via
+   `requireOrg`), property/tenant/lease management UI, payment application
+   logic (allocations + `Charge.status` in one transaction), lease lifecycle
+   workflows (activate, renew, terminate/move-out), tenant portal surface.
+   Tenant invitations arrive here with the email service.
+4. **Online payments** — Stripe integration (`src/services/stripe`): intents
+   land as `Payment` rows via `stripePaymentIntentId`, webhooks drive
+   `PENDING → COMPLETED/FAILED`.
+5. **Documents** — Cloudflare R2 (`src/services/storage`) behind the
+   existing `Document.storageKey` seam.
+6. **Hardening** — Vitest + Playwright, GitHub Actions CI, error monitoring.

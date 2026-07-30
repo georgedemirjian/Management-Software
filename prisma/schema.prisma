@@ -12,6 +12,14 @@ datasource db {
   provider = "postgresql"
 }
 
+/// Global persona roles. Per-LLC authority arrives with the organization
+/// plugin in a later phase — do not add LLC-scoped roles here.
+
+enum UserRole {
+  LANDLORD
+  TENANT
+}
+
 model User {
   id            String    @id
   name          String
@@ -22,6 +30,20 @@ model User {
   updatedAt     DateTime  @updatedAt
   sessions      Session[]
   accounts      Account[]
+
+  // Customized from Better Auth's generated `role String?`: enum + NOT NULL
+  // so Postgres itself rejects junk roles. Values mirror src/types/auth.ts.
+  // Review this field after any `@better-auth/cli generate` rerun.
+  role       UserRole  @default(TENANT)
+  banned     Boolean?  @default(false)
+  banReason  String?
+  banExpires DateTime?
+
+  members     Member[]
+  invitations Invitation[]
+
+  // Domain back-relation (NOT Better Auth managed — see Organization note).
+  tenantProfiles Tenant[]
 
   @@unique([email])
   @@map("user")
@@ -37,6 +59,10 @@ model Session {
   userAgent String?
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  impersonatedBy String?
+
+  activeOrganizationId String?
 
   @@unique([token])
   @@index([userId])
@@ -73,4 +99,427 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+model RateLimit {
+  id          String @id
+  key         String
+  count       Int
+  lastRequest BigInt
+
+  @@unique([key])
+  @@map("rateLimit")
+}
+
+model Organization {
+  id          String       @id
+  name        String
+  slug        String
+  logo        String?
+  createdAt   DateTime
+  metadata    String?
+  members     Member[]
+  invitations Invitation[]
+
+  // Domain back-relations (NOT Better Auth managed). A future
+  // `@better-auth/cli generate` rerun may drop these — restore from the diff.
+  llcs               Llc[]
+  properties         Property[]
+  units              Unit[]
+  tenants            Tenant[]
+  leases             Lease[]
+  leaseTenants       LeaseTenant[]
+  charges            Charge[]
+  payments           Payment[]
+  paymentAllocations PaymentAllocation[]
+  documents          Document[]
+
+  @@unique([slug])
+  @@map("organization")
+}
+
+model Member {
+  id             String       @id
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           String       @default("member")
+  createdAt      DateTime
+
+  @@index([organizationId])
+  @@index([userId])
+  @@map("member")
+}
+
+model Invitation {
+  id             String       @id
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           String?
+  status         String       @default("pending")
+  expiresAt      DateTime
+  createdAt      DateTime     @default(now())
+  inviterId      String
+  user           User         @relation(fields: [inviterId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("invitation")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Domain model (Phase 3)
+//
+// Invariants — enforced by server code, documented here because the schema
+// cannot express them all:
+//
+//  1. ORG SCOPING: every domain row carries organizationId (the management
+//     business — the SaaS tenancy boundary). It is never client-supplied;
+//     servers inject it from the session's active organization. A child's
+//     organizationId must always equal its parent's.
+//  2. MONEY: integer cents only (`*Cents`), USD assumed portfolio-wide.
+//  3. FINANCIAL ROWS ARE APPEND-ONLY: Charge / Payment / PaymentAllocation
+//     have no deletedAt on purpose — corrections are status changes
+//     (VOIDED / WAIVED / REFUNDED), and Restrict FKs make hard deletes fail
+//     once a row is referenced. Structural rows (LLC / Property / Unit /
+//     Tenant / Lease / Document) soft-delete via deletedAt.
+//  4. AUDIT: createdById is a plain column (no FK) so authorship survives
+//     user deletion. A full audit-log table is a later phase.
+//  5. Charge.status is derivable from PaymentAllocation sums; it is stored
+//     for queryability and maintained by the payment-application logic.
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum LeaseStatus {
+  DRAFT // being prepared, not signed
+  PENDING // signed, starts in the future
+  ACTIVE
+  ENDED // reached its natural end date
+  TERMINATED // ended early (eviction, mutual agreement, …)
+}
+
+enum ChargeType {
+  RENT
+  DEPOSIT
+  LATE_FEE
+  UTILITY
+  MAINTENANCE
+  OTHER
+}
+
+enum ChargeStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  WAIVED // forgiven — kept for history
+  VOIDED // entered in error — kept for history
+}
+
+enum PaymentMethod {
+  ACH
+  CARD
+  CASH
+  CHECK
+  MONEY_ORDER
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING // initiated, not settled (Stripe async flows)
+  COMPLETED
+  FAILED
+  REFUNDED
+  VOIDED // recorded in error — kept for history
+}
+
+/// Legal entity holding title to properties. An accounting/liability
+/// grouping inside one organization — NOT an access boundary. Properties
+/// may move between LLCs (restructuring) without leaving the organization.
+model Llc {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  name      String
+  legalName String?
+  ein       String?
+  notes     String?
+
+  deletedAt   DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  properties Property[]
+
+  @@index([organizationId])
+  @@map("llc")
+}
+
+model Property {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  llcId          String
+  llc            Llc          @relation(fields: [llcId], references: [id], onDelete: Restrict)
+
+  name         String
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String
+  postalCode   String
+  notes        String?
+
+  deletedAt   DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  units     Unit[]
+  documents Document[]
+
+  @@index([organizationId])
+  @@index([llcId])
+  @@map("property")
+}
+
+/// Single-family homes are a Property with exactly one Unit.
+model Unit {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  propertyId     String
+  property       Property     @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+
+  label     String
+  bedrooms  Int?
+  bathrooms Decimal? @db.Decimal(2, 1)
+  sqft      Int?
+  notes     String?
+
+  deletedAt   DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  leases    Lease[]
+  documents Document[]
+
+  @@unique([propertyId, label])
+  @@index([organizationId])
+  @@map("unit")
+}
+
+/// A person who rents (or rented) from the organization. Exists
+/// independently of login access: userId is linked only when the landlord
+/// provisions a portal account. Tenants are NEVER organization members.
+model Tenant {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  firstName String
+  lastName  String
+  email     String?
+  phone     String?
+  notes     String?
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  deletedAt   DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  leases    LeaseTenant[]
+  payments  Payment[]
+  documents Document[]
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, lastName])
+  @@map("tenant")
+}
+
+model Lease {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  unitId         String
+  unit           Unit         @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
+  status LeaseStatus @default(DRAFT)
+
+  startDate   DateTime  @db.Date
+  endDate     DateTime? @db.Date // null = month-to-month / open-ended
+  moveOutDate DateTime? @db.Date // actual vacate date, set on move-out
+
+  rentCents    Int
+  depositCents Int @default(0)
+  dueDay       Int @default(1) // 1–28, validated in Zod
+  graceDays    Int @default(0)
+  lateFeeCents Int @default(0)
+
+  /// Renewal chain: this lease continues renewedFrom. History is preserved
+  /// as separate Lease rows, never by mutating the old lease.
+  renewedFromId String? @unique
+  renewedFrom   Lease?  @relation("LeaseRenewal", fields: [renewedFromId], references: [id], onDelete: Restrict)
+  renewedTo     Lease?  @relation("LeaseRenewal")
+
+  notes String?
+
+  deletedAt   DateTime?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenants   LeaseTenant[]
+  charges   Charge[]
+  payments  Payment[]
+  documents Document[]
+
+  @@index([organizationId, status])
+  @@index([unitId, status])
+  @@map("lease")
+}
+
+/// Join: a lease has 1+ tenants (co-signers), a tenant has many leases over
+/// time (renewals, moves). Restrict deletes — occupancy history is history.
+model LeaseTenant {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  leaseId        String
+  lease          Lease        @relation(fields: [leaseId], references: [id], onDelete: Restrict)
+  tenantId       String
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  isPrimary Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([leaseId, tenantId])
+  @@index([tenantId])
+  @@index([organizationId])
+  @@map("lease_tenant")
+}
+
+/// Money OWED: rent for a period, a fee, a deposit due. Append-only.
+model Charge {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  leaseId        String
+  lease          Lease        @relation(fields: [leaseId], references: [id], onDelete: Restrict)
+
+  type        ChargeType
+  status      ChargeStatus @default(PENDING)
+  amountCents Int
+  description String?
+  dueDate     DateTime     @db.Date
+  periodStart DateTime?    @db.Date // billing period covered (rent charges)
+  periodEnd   DateTime?    @db.Date
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  allocations PaymentAllocation[]
+
+  @@index([leaseId, status])
+  @@index([organizationId, dueDate])
+  @@map("charge")
+}
+
+/// Money RECEIVED. Append-only; stripePaymentIntentId is the Stripe seam.
+model Payment {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  leaseId        String
+  lease          Lease        @relation(fields: [leaseId], references: [id], onDelete: Restrict)
+  tenantId       String? // who paid, when known (co-tenant attribution)
+  tenant         Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  method      PaymentMethod
+  status      PaymentStatus @default(COMPLETED)
+  amountCents Int
+  receivedAt  DateTime
+  reference   String? // check number, external transaction id, …
+  memo        String?
+
+  stripePaymentIntentId String? @unique
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  allocations PaymentAllocation[]
+
+  @@index([leaseId])
+  @@index([organizationId, receivedAt])
+  @@map("payment")
+}
+
+/// Which payment settled which charge, and how much — supports partial
+/// payments and one payment covering several charges. Charge.status is
+/// derived from these sums. Restrict FKs make payment/charge rows
+/// undeletable once allocated (append-only enforcement at the DB level).
+model PaymentAllocation {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  paymentId      String
+  payment        Payment      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  chargeId       String
+  charge         Charge       @relation(fields: [chargeId], references: [id], onDelete: Restrict)
+
+  amountCents Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([paymentId, chargeId])
+  @@index([chargeId])
+  @@index([organizationId])
+  @@map("payment_allocation")
+}
+
+/// File metadata; bytes live in object storage (Cloudflare R2 later) under
+/// storageKey. At most ONE parent FK is set (Zod-enforced); none set =
+/// org-level document (e.g. business insurance).
+model Document {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  name       String
+  storageKey String @unique
+  mimeType   String
+  sizeBytes  Int
+
+  propertyId String?
+  property   Property? @relation(fields: [propertyId], references: [id], onDelete: Restrict)
+  unitId     String?
+  unit       Unit?     @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  leaseId    String?
+  lease      Lease?    @relation(fields: [leaseId], references: [id], onDelete: Restrict)
+  tenantId   String?
+  tenant     Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  uploadedById String? // plain column, same rationale as createdById
+
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([organizationId])
+  @@index([propertyId])
+  @@index([unitId])
+  @@index([leaseId])
+  @@index([tenantId])
+  @@map("document")
 }

@@ -7,8 +7,12 @@ export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
+    seed: "tsx prisma/seed.ts",
   },
   datasource: {
     url: process.env["DATABASE_URL"],
+    // Only needed when the DB user cannot create databases on the fly
+    // (prisma dev server, most hosted Postgres). Unset = Prisma default.
+    shadowDatabaseUrl: process.env["SHADOW_DATABASE_URL"],
   },
 });
