@@ -5,12 +5,12 @@ single landlord managing ~80 tenants across multiple properties held in
 multiple LLCs; architected so it can evolve into a multi-tenant SaaS platform
 without a rewrite.
 
-**Current phase: foundation + auth + domain model (Phases 1–3).** The
-project skeleton, the authentication/authorization layer, and the complete
-database layer (organizations, LLCs, properties, units, tenants, leases,
-charges, payments, documents) are in place. There are **no CRUD pages or
-business workflows yet** — Phase 3 is schema, migrations, validation, and
-seed data only.
+**Current phase: Phases 1–5 complete.** Foundation, auth/authz, the full
+database layer, the CRUD + workflow surface (properties, tenants, leases with
+lifecycle workflows, the payment engine, portfolio dashboard), and **online
+payments via Stripe** (tenant portal → hosted Checkout → signature-verified
+webhook that settles into the same ledger). Stripe is optional: with no keys
+configured the app runs normally and online-payment surfaces degrade off.
 
 ## Tech stack
 
@@ -23,8 +23,8 @@ seed data only.
 | Auth              | Better Auth (email/password + roles)     |
 | Client data       | TanStack Query v5                        |
 | Forms             | React Hook Form + Zod v4                 |
+| Payments          | Stripe (hosted Checkout + webhooks)      |
 | Documents (later) | Cloudflare R2                            |
-| Payments (later)  | Stripe                                   |
 
 ## Getting started
 
@@ -100,22 +100,38 @@ src/
     dashboard/          Protected app shell: sidebar + topbar + pages
     api/auth/[...all]/  Better Auth HTTP handler
     api/me/             Example protected JSON endpoint
+    api/webhooks/stripe Signature-verified Stripe webhook (settles payments)
     providers.tsx       Client providers (TanStack Query, next-themes)
   components/
     ui/                 shadcn/ui primitives (owned source, edit freely)
     layout/             App chrome: navbar, sidebar, topbar menus
-  features/             Domain modules — see src/features/README.md
+    form/               Shared form building blocks (Field)
+    confirm-dialog.tsx  Reusable destructive-confirm dialog
+  features/             Domain modules — see src/features/README.md.
     auth/               Login form + its validation schema
+    properties/         Reference CRUD slice (Phase 4):
+                          server/queries.ts   org-scoped reads
+                          server/actions.ts   Server Action mutations
+                          components/          tables, form dialogs
+                          validation/          Zod input schemas
+    tenants/            Same layout as properties/
+    leases/             + lifecycle workflow actions/components
+    payments/           Payment engine + ledger + settlement.ts (shared) +
+                        stripe.ts (Checkout) + stripe-webhook.ts
+    portal/             Tenant portal (their leases/charges + Pay button)
+    dashboard/          Portfolio-summary query
   hooks/                Shared cross-domain React hooks
   lib/                  Shared utilities usable everywhere:
                         env.ts (validated env), utils.ts (cn),
                         query-client.ts, auth-client.ts (browser auth),
-                        permissions.ts (Better Auth access control)
+                        permissions.ts, forms.ts (RHF helpers),
+                        money.ts (cents), format.ts (dates)
   server/               Server-only code — never import from Client
                         Components: db.ts (Prisma), auth.ts (Better Auth),
-                        auth-helpers.ts (page guards), api.ts (API guards)
-  services/             Clients for external systems (Stripe, R2, email —
-                        added in later phases)
+                        auth-helpers.ts (page guards), api.ts (API guards),
+                        action.ts (Server Action wrapper)
+  services/             Clients for external systems: stripe/ (lazy client);
+                        R2, email added in later phases
   types/                Global/shared TypeScript types (auth roles, API
                         wire shapes)
   validation/           Shared Zod schemas + helpers (domain-specific
@@ -233,6 +249,86 @@ Three layers, from cosmetic to authoritative:
 Public routes: `/`, `/login`, `/api/auth/*`. Protected: `/dashboard/*` and
 all future API routes except the auth handler.
 
+### Data access & mutations (Phase 4)
+
+The pattern every domain feature follows, established by the properties
+module (`src/features/properties/`):
+
+- **Reads — Server Components → `server/queries.ts`.** Query functions take
+  the `organizationId` from `requireOrg()`, filter `deletedAt: null`, and are
+  imported only by Server Components (`import "server-only"` enforces it).
+  They return plain data (Prisma `Decimal` converted to `number` at the
+  boundary).
+- **Writes — Server Actions → `server/actions.ts`.** Each mutation is a
+  literal `export async function` (the `"use server"` contract) that delegates
+  to `runOrgAction(schema, input, handler)` in `src/server/action.ts`, which
+  centralizes auth (`requireOrg`), Zod validation, and a typed
+  `ActionResult<T>` (`{ ok, data } | { ok, error, fieldErrors }`) so nothing
+  throws across the client boundary. Throw `ActionError` for clean
+  user-facing failures; everything else becomes an opaque message. Handlers
+  call `revalidatePath` so Server Component reads refresh.
+- **Ownership is re-verified server-side.** Every client-supplied id (an
+  `llcId`, a row's own id) is re-checked against the caller's organization in
+  the handler before use — inputs are never trusted to be in-scope. This is
+  the query-time complement to the `organizationId`-on-every-row rule.
+- **Soft vs. hard.** Structural deletes set `deletedAt` (and cascade to
+  children, e.g. property → its units) and are blocked while an active lease
+  exists; financial rows are never deleted (Phase 3 RESTRICT FKs enforce it).
+- **Forms.** Client dialogs use React Hook Form + `standardSchemaResolver`
+  over the same Zod schema, the shared `Field` component
+  (`src/components/form/`), and `applyFieldErrors` to surface a Server
+  Action's `fieldErrors`. Base UI's `Select` is driven via `Controller`
+  (`value`/`onValueChange`, `items` for labels); numeric inputs use the
+  `numericField` register option. There is no shadcn `form` component under
+  Base UI — RHF is wired directly. Money renders through `src/lib/money.ts`
+  (integer cents in, formatted out); civil dates through `src/lib/format.ts`
+  (UTC-stable).
+
+TanStack Query remains available for genuinely interactive client widgets;
+it is not used for standard list/detail/CRUD, which the Server
+Component + Server Action pair covers without an API layer.
+
+### Online payments — Stripe (Phase 5)
+
+Tenants pay rent online; those payments land in the **same ledger** as
+manually-recorded ones. Stripe is a _source of payments_, never a second
+ledger — the database is the system of record.
+
+- **Optional by design.** All Stripe env vars are optional
+  (`isStripeConfigured()` in `src/lib/env.ts`). With none set, the webhook
+  returns 503, the tenant portal shows "online payments aren't enabled", and
+  everything else runs unchanged. The Stripe client
+  (`src/services/stripe/`) is constructed lazily so builds never need keys.
+- **Hosted Checkout, not Elements.** Paying is a server-initiated redirect to
+  Stripe's hosted page (`createLeaseCheckoutSession` in
+  `src/features/payments/server/stripe.ts`), so no publishable key or
+  client-side Stripe.js ships — only `STRIPE_SECRET_KEY` server-side.
+- **The webhook is the source of truth, never the browser.** A Checkout
+  action records a `PENDING` `Payment` up front with the intended allocations
+  in the session metadata; only `POST /api/webhooks/stripe` (signature-verified
+  with `STRIPE_WEBHOOK_SECRET`) flips it to `COMPLETED` and settles it.
+- **Settlement reuses the Phase 4 engine.** The webhook and the manual
+  `recordPayment` share `src/features/payments/server/settlement.ts`
+  (`allocatePayment` / `reversePaymentAllocations` / `recomputeChargeStatus`),
+  so an online payment updates `Charge.status` identically. On settle,
+  allocations are re-validated against each charge's _current_ balance and
+  clamped, so a race can never over-allocate.
+- **Idempotent.** Every event id is recorded in `webhook_event`; replays are
+  no-ops (Stripe retries deliveries). `payment_intent.succeeded` settles,
+  `checkout.session.async_payment_failed`/`expired` → `FAILED`,
+  `charge.refunded` → `REFUNDED` + allocation reversal.
+- **Tenant-portal authorization.** Tenants have no organization membership;
+  the portal (rendered on `/dashboard` for `TENANT` users) reaches data only
+  through `Tenant.userId`, and the Checkout action verifies the user is a
+  tenant _on that lease_.
+- **Verified** by an integration test driving synthetic events through
+  `processStripeEvent` (settle → idempotent replay → refund reversal →
+  failure). What needs live Stripe keys to exercise end-to-end: the hosted
+  Checkout redirect itself and signature verification.
+- **Stripe Connect** columns exist on `Organization` (`stripeAccountId`,
+  `stripeChargesEnabled`) for per-org payouts; the onboarding UI, ACH method,
+  and fee capture are deferred (see `docs/PHASE_5_PLAN.md`).
+
 ### Ownership hierarchy & tenancy (Phase 3 — supersedes earlier notes)
 
 ```
@@ -275,15 +371,22 @@ relation-plumbing noise they add.
 - **Ledger:** `Charge` = money owed, `Payment` = money received,
   `PaymentAllocation` = which payment settled which charge. Partial payments
   and one payment covering several charges (Stripe's webhook reality) fall
-  out naturally. `Charge.status` is stored for queryability but derivable
-  from allocation sums — payment-application logic must update both in one
-  transaction.
-- **Append-only financial rows.** `Charge`/`Payment`/`PaymentAllocation`
-  have no `deletedAt` by design: corrections are status changes (`VOIDED`,
-  `WAIVED`, `REFUNDED`), and `Restrict` FKs make deleting an allocated
-  payment or charge fail at the database. Structural rows (`Llc`,
-  `Property`, `Unit`, `Tenant`, `Lease`, `Document`) soft-delete via
-  `deletedAt` — queries must filter `deletedAt: null`.
+  out naturally. `Charge.status` is stored for queryability but derived from
+  allocation sums by the payment engine in `src/features/payments/server/
+actions.ts` — `recordPayment` writes the payment, its allocations, and the
+  recomputed status of every touched charge **in one transaction**
+  (`recomputeChargeStatus`). Row-level integrity is proven by an integration
+  test (partial → full → void → reverse → waive).
+- **Append-only financial records.** `Charge` and `Payment` rows are never
+  deleted: corrections are status changes (`VOIDED`, `WAIVED`, `REFUNDED`),
+  and `Restrict` FKs make deleting an allocated payment or charge fail at the
+  database. Refinement from Phase 4: voiding a _payment_ reverses its
+  allocations (they are settlement links, not standalone financial facts) and
+  reopens the affected charges, while the payment row itself is kept as
+  `VOIDED` — the audit trail is the preserved Charge/Payment rows, not the
+  allocation links. Structural rows (`Llc`, `Property`, `Unit`, `Tenant`,
+  `Lease`, `Document`) soft-delete via `deletedAt` — queries must filter
+  `deletedAt: null`.
 - **Money:** integer cents (`*Cents` columns), USD assumed portfolio-wide; a
   currency column is deliberately deferred until a non-US requirement
   exists. Civil dates (lease terms, due dates) are `@db.Date` — no timezone
@@ -342,9 +445,11 @@ keeps them from fighting. `npm run check` is the single CI gate.
 
 Documented and validated in [`src/lib/env.ts`](src/lib/env.ts); template in
 [`.env.example`](.env.example). App runtime: `DATABASE_URL`,
-`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`. Tooling-only: `SHADOW_DATABASE_URL`
-(hosted Postgres + `migrate dev`). Seed-only (never read by the app):
-`SEED_LANDLORD_EMAIL`, `SEED_LANDLORD_PASSWORD`, `SEED_LANDLORD_NAME`.
+`BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`. Optional (online payments):
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`. Tooling-only:
+`SHADOW_DATABASE_URL` (hosted Postgres + `migrate dev`). Seed-only (never read
+by the app): `SEED_LANDLORD_EMAIL`, `SEED_LANDLORD_PASSWORD`,
+`SEED_LANDLORD_NAME`.
 
 ## Roadmap
 
@@ -353,14 +458,16 @@ Documented and validated in [`src/lib/env.ts`](src/lib/env.ts); template in
 2. ~~**Organizations + domain model**~~ — done (Phase 3): organization
    plugin, full schema (LLCs → properties → units → leases → tenants +
    append-only ledger + documents), migrations, Zod schemas, realistic seed.
-3. **CRUD + workflows (next)** — feature server functions (org-scoped via
-   `requireOrg`), property/tenant/lease management UI, payment application
-   logic (allocations + `Charge.status` in one transaction), lease lifecycle
-   workflows (activate, renew, terminate/move-out), tenant portal surface.
-   Tenant invitations arrive here with the email service.
-4. **Online payments** — Stripe integration (`src/services/stripe`): intents
-   land as `Payment` rows via `stripePaymentIntentId`, webhooks drive
-   `PENDING → COMPLETED/FAILED`.
-5. **Documents** — Cloudflare R2 (`src/services/storage`) behind the
-   existing `Document.storageKey` seam.
+3. ~~**CRUD + workflows**~~ — done (Phase 4): the Server Component + Server
+   Action pattern (org-scoped via `requireOrg`) across properties, tenants,
+   leases (with lifecycle workflows: activate, renew, terminate, end), the
+   payment engine (charge/payment/allocation with atomic `Charge.status`
+   recompute + payment void/reversal), and the portfolio dashboard.
+4. ~~**Online payments**~~ — done (Phase 5): tenant portal → hosted Stripe
+   Checkout → signature-verified webhook settling into the shared ledger,
+   idempotent, degrades off with no keys. See `docs/PHASE_5_PLAN.md` for
+   what's deferred (Connect onboarding UI, ACH, fee capture).
+5. **Documents (next)** — Cloudflare R2 (`src/services/storage`) behind the
+   existing `Document.storageKey` seam. Good companion: tenant invitations +
+   the email service, and late-fee automation (cron over `dueDay`/`graceDays`).
 6. **Hardening** — Vitest + Playwright, GitHub Actions CI, error monitoring.

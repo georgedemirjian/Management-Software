@@ -7,13 +7,31 @@ multiple LLCs. Must be able to evolve into multi-tenant SaaS without a
 rewrite. Prioritize clean architecture, maintainability, and type safety over
 speed of delivery. Full architecture rationale lives in README.md.
 
-**Current phase: foundation + auth + domain model complete (Phases 1–3).**
-The full schema (org → LLC → property → unit → lease → tenants/ledger/docs)
-exists with migrations, Zod schemas, and a realistic seed — but there are NO
-CRUD pages or business workflows yet; do not add them unless explicitly
-asked. There is NO public registration: the first LANDLORD comes from
-`npm run db:seed`; future tenant accounts will be provisioned via the Better
-Auth admin plugin.
+**Current phase: Phases 1–5 complete.** Foundation, auth, full schema, all
+domain CRUD + workflows (properties, tenants, leases + lifecycle, payment
+engine, dashboard), and **Stripe online payments** (tenant portal → hosted
+Checkout → webhook settlement). Next is Phase 6 (documents / R2). There is NO
+public registration: the first LANDLORD comes from `npm run db:seed`; tenant
+accounts are provisioned via the Better Auth admin plugin. When copying a
+domain, **properties** is the cleanest reference; **leases + payments** show
+the transactional/lifecycle patterns.
+
+## Stripe / online payments (Phase 5)
+
+- Stripe is OPTIONAL: gate every Stripe surface on `isStripeConfigured()`
+  (`@/lib/env`). The app must build and run with no Stripe env vars.
+- The client (`@/services/stripe`) is lazy — call `getStripe()` only after the
+  `isStripeConfigured()` check. Uses hosted **Checkout** (server redirect), so
+  there is NO publishable key / client Stripe.js; only `STRIPE_SECRET_KEY` +
+  `STRIPE_WEBHOOK_SECRET` (both optional).
+- **The webhook settles payments, never the browser.** Checkout records a
+  PENDING Payment; `POST /api/webhooks/stripe` (signature-verified) flips it
+  COMPLETED. Webhook logic lives in `stripe-webhook.ts` (`processStripeEvent`,
+  idempotent via the `webhook_event` table) and reuses the shared settlement
+  engine — do NOT re-implement allocation there.
+- Tenant-portal auth: tenants have no org; reach their data only via
+  `Tenant.userId`, and verify lease membership before any tenant action
+  (see `createLeaseCheckoutSession`). `requireOrg` does NOT apply to tenants.
 
 ## Stack
 
@@ -27,10 +45,49 @@ Planned later: Cloudflare R2 (documents), Stripe (payments).
 - `npm run check` — typecheck + lint + format check; run before finishing work
 - `npm run dev` / `npm run build`
 - `npm run db:migrate -- --name <name>` — needs a running Postgres
-  (`npm run db:up` for Docker, or `npx prisma dev`)
+  (`npm run db:up` for Docker, or any Postgres at `DATABASE_URL`)
 - `npm run db:generate` — after every schema edit
 - `npm run db:seed` — creates the initial LANDLORD from `SEED_LANDLORD_*`
   env vars (idempotent)
+
+## Data access & mutations (Phase 4 — copy the properties feature)
+
+- **Reads:** Server Components call `features/<domain>/server/queries.ts`.
+  Every query takes `organizationId` (from `requireOrg()`), filters
+  `deletedAt: null`, starts with `import "server-only"`, and converts Prisma
+  `Decimal` → `number` before returning.
+- **Writes:** Server Actions in `features/<domain>/server/actions.ts` — file
+  starts with `"use server"`, every export is a literal
+  `export async function` delegating to `runOrgAction(schema, input, handler)`
+  (`@/server/action`). Never export a non-async binding from that file.
+- In a handler, RE-VERIFY every client-supplied id against `ctx.organizationId`
+  before use (see `assertLlcInOrg`), throw `ActionError` for clean failures,
+  and call `revalidatePath(...)` after writing.
+- Structural deletes are soft (`deletedAt`, cascade to children, block on
+  active lease). NEVER delete Charge or Payment rows — corrections are status
+  changes (VOIDED/WAIVED/REFUNDED).
+- **Payment engine invariant:** `Charge.status` is derived from allocation
+  sums. NEVER write `PaymentAllocation` directly — use the shared settlement
+  engine `@/features/payments/server/settlement.ts` (`allocatePayment` /
+  `reversePaymentAllocations`, which recompute charge status) inside a
+  `db.$transaction`. Both the manual `recordPayment`/`voidPayment` and the
+  Stripe webhook go through it. Voiding/refunding a payment reverses its
+  allocations + reopens charges but keeps the payment row (VOIDED/REFUNDED).
+- **Money in forms:** the complex forms (lease create, renew, charge,
+  payment) use controlled `useState` (not RHF) and convert dollars→cents with
+  `dollarsToCents` on submit; the server action re-validates and returns
+  `fieldErrors`. Mount dialog bodies only while open (or conditionally render
+  the dialog) so state re-initializes from fresh props after `router.refresh`
+  — do NOT reset via `useEffect` (the `set-state-in-effect` lint rule).
+- **Forms** (client dialogs): RHF + `standardSchemaResolver(zodSchema)`,
+  shared `Field` (`@/components/form/field`), `applyFieldErrors` for a
+  Server Action's `fieldErrors`, `numericField` register option for numbers,
+  `Controller` for the Base UI `Select`. Dialogs are controlled
+  (`open`/`onOpenChange`), not trigger-nested. Destructive confirms use
+  `@/components/confirm-dialog`. Money via `@/lib/money`, dates via
+  `@/lib/format`. There is NO shadcn `form` component on Base UI.
+- Enable a sidebar nav item (`@/components/layout/app-sidebar`) when its
+  domain ships.
 
 ## Architecture rules
 

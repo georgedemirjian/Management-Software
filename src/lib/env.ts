@@ -48,7 +48,21 @@ const schema = z.object({
   SEED_LANDLORD_EMAIL: z.email().optional(),
   SEED_LANDLORD_PASSWORD: z.string().min(12).optional(),
   SEED_LANDLORD_NAME: z.string().min(1).optional(),
+
+  /**
+   * Stripe (Phase 5). All optional: online payments are a feature the app
+   * degrades without — gate on `isStripeConfigured()`. `STRIPE_SECRET_KEY`
+   * enables Checkout; `STRIPE_WEBHOOK_SECRET` verifies webhook signatures.
+   * Checkout is a server-side redirect, so no publishable key is needed.
+   */
+  STRIPE_SECRET_KEY: z.string().startsWith("sk_").optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().startsWith("whsec_").optional(),
 });
+
+/** True when the Stripe API can be called (Checkout sessions, etc.). */
+export function isStripeConfigured(): boolean {
+  return Boolean(env.STRIPE_SECRET_KEY);
+}
 
 // Treat empty strings as unset — `KEY=""` in a .env file is almost always a
 // mistake and should fail validation the same way a missing key does.

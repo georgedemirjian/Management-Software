@@ -40,14 +40,20 @@ const NAV_ITEMS = [
     title: "Properties",
     href: "/dashboard/properties",
     icon: Building2,
-    enabled: false,
+    enabled: true,
   },
-  { title: "Tenants", href: "/dashboard/tenants", icon: Users, enabled: false },
+  { title: "Tenants", href: "/dashboard/tenants", icon: Users, enabled: true },
+  {
+    title: "Leases",
+    href: "/dashboard/leases",
+    icon: FileText,
+    enabled: true,
+  },
   {
     title: "Payments",
     href: "/dashboard/payments",
     icon: CreditCard,
-    enabled: false,
+    enabled: true,
   },
   {
     title: "Documents",
@@ -88,7 +94,11 @@ export function AppSidebar() {
                 <SidebarMenuItem key={item.title}>
                   {item.enabled ? (
                     <SidebarMenuButton
-                      isActive={pathname === item.href}
+                      isActive={
+                        pathname === item.href ||
+                        (item.href !== "/dashboard" &&
+                          pathname.startsWith(`${item.href}/`))
+                      }
                       render={<Link href={item.href} />}
                     >
                       <item.icon />

@@ -121,6 +121,12 @@ model Organization {
   members     Member[]
   invitations Invitation[]
 
+  // Stripe Connect (Phase 5). Null until the org is onboarded; charges run on
+  // the platform account meanwhile. Domain-managed (not Better Auth) — a CLI
+  // rerun may drop these, restore from the diff.
+  stripeAccountId      String? @unique
+  stripeChargesEnabled Boolean @default(false)
+
   // Domain back-relations (NOT Better Auth managed). A future
   // `@better-auth/cli generate` rerun may drop these — restore from the diff.
   llcs               Llc[]
@@ -329,6 +335,9 @@ model Tenant {
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  // Stripe customer (Phase 5), created on first online payment.
+  stripeCustomerId String? @unique
+
   deletedAt   DateTime?
   createdById String?
   createdAt   DateTime  @default(now())
@@ -451,7 +460,12 @@ model Payment {
   reference   String? // check number, external transaction id, …
   memo        String?
 
-  stripePaymentIntentId String? @unique
+  // Stripe seams (Phase 5). A Checkout-initiated payment starts PENDING with
+  // a session id; the webhook fills the intent id and flips it COMPLETED.
+  stripePaymentIntentId   String? @unique
+  stripeCheckoutSessionId String? @unique
+  stripeFeeCents          Int?
+  failureReason           String?
 
   createdById String?
   createdAt   DateTime @default(now())
@@ -462,6 +476,17 @@ model Payment {
   @@index([leaseId])
   @@index([organizationId, receivedAt])
   @@map("payment")
+}
+
+/// Processed Stripe webhook events, keyed by Stripe's event id, for
+/// idempotency (Stripe retries deliveries). The presence of a row means the
+/// event was already applied.
+model WebhookEvent {
+  id        String   @id
+  type      String
+  createdAt DateTime @default(now())
+
+  @@map("webhook_event")
 }
 
 /// Which payment settled which charge, and how much — supports partial
