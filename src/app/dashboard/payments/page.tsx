@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/format";
 import { formatCents } from "@/lib/money";
+import { toSlugParam } from "@/lib/slug";
 import { requireOrg } from "@/server/auth-helpers";
 
 export const metadata: Metadata = { title: "Payments" };
@@ -98,7 +99,7 @@ export default async function PaymentsPage() {
                   <TableRow key={lease.id}>
                     <TableCell className="font-medium">
                       <Link
-                        href={`/dashboard/leases/${lease.id}`}
+                        href={`/dashboard/leases/${toSlugParam(`${lease.propertyName} ${lease.unitLabel}`, lease.id)}`}
                         className="hover:underline"
                       >
                         {lease.propertyName} · {lease.unitLabel}
@@ -148,7 +149,7 @@ export default async function PaymentsPage() {
                     </TableCell>
                     <TableCell>
                       <Link
-                        href={`/dashboard/leases/${p.leaseId}`}
+                        href={`/dashboard/leases/${toSlugParam(p.unitLabel, p.leaseId)}`}
                         className="hover:underline"
                       >
                         {p.unitLabel}

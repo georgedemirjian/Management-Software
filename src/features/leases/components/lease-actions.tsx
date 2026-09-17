@@ -25,6 +25,7 @@ import {
 } from "@/features/leases/server/actions";
 import type { LeaseDetail } from "@/features/leases/server/queries";
 import { dollarsToCents, centsToDollars } from "@/lib/money";
+import { toSlugParam } from "@/lib/slug";
 
 export function LeaseActions({ lease }: { lease: LeaseDetail }) {
   const router = useRouter();
@@ -59,6 +60,7 @@ export function LeaseActions({ lease }: { lease: LeaseDetail }) {
     (lease.status === "ACTIVE" || lease.status === "ENDED") &&
     !lease.renewedToId;
   const canDelete = lease.status === "DRAFT";
+  const renewedToId = lease.renewedToId;
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -92,11 +94,15 @@ export function LeaseActions({ lease }: { lease: LeaseDetail }) {
           Renew
         </Button>
       ) : null}
-      {lease.renewedToId ? (
+      {renewedToId ? (
         <Button
           size="sm"
           variant="ghost"
-          onClick={() => router.push(`/dashboard/leases/${lease.renewedToId}`)}
+          onClick={() =>
+            router.push(
+              `/dashboard/leases/${toSlugParam(`${lease.unit.property.name} ${lease.unit.label}`, renewedToId)}`,
+            )
+          }
         >
           View renewal →
         </Button>
@@ -274,7 +280,9 @@ function RenewDialog({
       }
       toast.success("Renewal lease created (pending).");
       onOpenChange(false);
-      router.push(`/dashboard/leases/${res.data.id}`);
+      router.push(
+        `/dashboard/leases/${toSlugParam(`${lease.unit.property.name} ${lease.unit.label}`, res.data.id)}`,
+      );
       router.refresh();
     } finally {
       setPending(false);

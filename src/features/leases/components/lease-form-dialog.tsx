@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { createLease } from "@/features/leases/server/actions";
 import { dollarsToCents } from "@/lib/money";
+import { toSlugParam } from "@/lib/slug";
 
 type UnitOption = { id: string; label: string; occupied: boolean };
 type TenantOption = { id: string; name: string };
@@ -121,7 +122,10 @@ function LeaseFormBody({
       }
       toast.success("Lease created as a draft.");
       onDone();
-      router.push(`/dashboard/leases/${result.data.id}`);
+      const unitLabel = units.find((u) => u.id === unitId)?.label ?? "";
+      router.push(
+        `/dashboard/leases/${toSlugParam(unitLabel, result.data.id)}`,
+      );
       router.refresh();
     } finally {
       setPending(false);

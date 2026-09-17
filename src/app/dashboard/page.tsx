@@ -12,6 +12,7 @@ import { getTenantPortalData } from "@/features/portal/server/queries";
 import { Card, CardContent } from "@/components/ui/card";
 import { isStripeConfigured } from "@/lib/env";
 import { formatCents } from "@/lib/money";
+import { toSlugParam } from "@/lib/slug";
 import { requireAuth } from "@/server/auth-helpers";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -147,7 +148,7 @@ export default async function DashboardPage() {
             {outstanding.slice(0, 6).map((lease) => (
               <Link
                 key={lease.id}
-                href={`/dashboard/leases/${lease.id}`}
+                href={`/dashboard/leases/${toSlugParam(`${lease.propertyName} ${lease.unitLabel}`, lease.id)}`}
                 className="flex items-center justify-between rounded-lg border px-4 py-3 text-sm transition-colors hover:bg-accent/40"
               >
                 <span>

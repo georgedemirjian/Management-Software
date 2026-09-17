@@ -18,6 +18,7 @@ import { LeaseStatusBadge } from "@/features/leases/components/lease-status-badg
 import type { LeaseListItem } from "@/features/leases/server/queries";
 import { formatCivilDate } from "@/lib/format";
 import { formatCents } from "@/lib/money";
+import { toSlugParam } from "@/lib/slug";
 
 type UnitOption = { id: string; label: string; occupied: boolean };
 type TenantOption = { id: string; name: string };
@@ -79,7 +80,7 @@ export function LeasesTable({
                 <TableRow key={lease.id}>
                   <TableCell className="font-medium">
                     <Link
-                      href={`/dashboard/leases/${lease.id}`}
+                      href={`/dashboard/leases/${toSlugParam(`${lease.propertyName} ${lease.unitLabel}`, lease.id)}`}
                       className="hover:underline"
                     >
                       {lease.propertyName} · {lease.unitLabel}

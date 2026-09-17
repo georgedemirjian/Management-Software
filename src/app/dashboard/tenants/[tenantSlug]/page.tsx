@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/table";
 import { formatCivilDate } from "@/lib/format";
 import { formatCents } from "@/lib/money";
+import { idFromSlugParam, toSlugParam } from "@/lib/slug";
 import { requireOrg } from "@/server/auth-helpers";
 
 export const metadata: Metadata = { title: "Tenant" };
@@ -24,9 +25,10 @@ export const metadata: Metadata = { title: "Tenant" };
 export default async function TenantDetailPage({
   params,
 }: {
-  params: Promise<{ tenantId: string }>;
+  params: Promise<{ tenantSlug: string }>;
 }) {
-  const { tenantId } = await params;
+  const { tenantSlug } = await params;
+  const tenantId = idFromSlugParam(tenantSlug);
   const { organizationId } = await requireOrg();
   const tenant = await getTenant(organizationId, tenantId);
   if (!tenant) notFound();
@@ -94,7 +96,7 @@ export default async function TenantDetailPage({
                   <TableRow key={lease.id}>
                     <TableCell className="font-medium">
                       <Link
-                        href={`/dashboard/leases/${lease.id}`}
+                        href={`/dashboard/leases/${toSlugParam(`${lease.propertyName} ${lease.unitLabel}`, lease.id)}`}
                         className="hover:underline"
                       >
                         {lease.propertyName} · {lease.unitLabel}

@@ -470,4 +470,5 @@ by the app): `SEED_LANDLORD_EMAIL`, `SEED_LANDLORD_PASSWORD`,
 5. **Documents (next)** — Cloudflare R2 (`src/services/storage`) behind the
    existing `Document.storageKey` seam. Good companion: tenant invitations +
    the email service, and late-fee automation (cron over `dueDay`/`graceDays`).
+   See `docs/PHASE_6_PLAN.md`.
 6. **Hardening** — Vitest + Playwright, GitHub Actions CI, error monitoring.

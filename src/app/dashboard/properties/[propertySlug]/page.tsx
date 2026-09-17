@@ -7,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { PropertyEditButton } from "@/features/properties/components/property-edit-button";
 import { UnitsSection } from "@/features/properties/components/units-section";
 import { getProperty, listLlcs } from "@/features/properties/server/queries";
+import { idFromSlugParam } from "@/lib/slug";
 import { requireOrg } from "@/server/auth-helpers";
 
 export const metadata: Metadata = { title: "Property" };
@@ -14,9 +15,10 @@ export const metadata: Metadata = { title: "Property" };
 export default async function PropertyDetailPage({
   params,
 }: {
-  params: Promise<{ propertyId: string }>;
+  params: Promise<{ propertySlug: string }>;
 }) {
-  const { propertyId } = await params;
+  const { propertySlug } = await params;
+  const propertyId = idFromSlugParam(propertySlug);
   const { organizationId } = await requireOrg();
 
   const [property, llcs] = await Promise.all([

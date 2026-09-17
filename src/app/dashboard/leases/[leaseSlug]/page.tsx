@@ -10,6 +10,7 @@ import { LeaseLedger } from "@/features/payments/components/lease-ledger";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatCivilDate } from "@/lib/format";
 import { formatCents } from "@/lib/money";
+import { idFromSlugParam, toSlugParam } from "@/lib/slug";
 import { requireOrg } from "@/server/auth-helpers";
 
 export const metadata: Metadata = { title: "Lease" };
@@ -17,9 +18,10 @@ export const metadata: Metadata = { title: "Lease" };
 export default async function LeaseDetailPage({
   params,
 }: {
-  params: Promise<{ leaseId: string }>;
+  params: Promise<{ leaseSlug: string }>;
 }) {
-  const { leaseId } = await params;
+  const { leaseSlug } = await params;
+  const leaseId = idFromSlugParam(leaseSlug);
   const { organizationId } = await requireOrg();
   const lease = await getLease(organizationId, leaseId);
   if (!lease) notFound();
@@ -42,7 +44,7 @@ export default async function LeaseDetailPage({
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-semibold tracking-tight">
               <Link
-                href={`/dashboard/properties/${lease.unit.property.id}`}
+                href={`/dashboard/properties/${toSlugParam(lease.unit.property.name, lease.unit.property.id)}`}
                 className="hover:underline"
               >
                 {lease.unit.property.name}
@@ -83,7 +85,7 @@ export default async function LeaseDetailPage({
                 className="flex items-center justify-between gap-2"
               >
                 <Link
-                  href={`/dashboard/tenants/${t.id}`}
+                  href={`/dashboard/tenants/${toSlugParam(`${t.firstName} ${t.lastName}`, t.id)}`}
                   className="text-sm hover:underline"
                 >
                   {t.firstName} {t.lastName}

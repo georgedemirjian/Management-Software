@@ -57,11 +57,31 @@ const schema = z.object({
    */
   STRIPE_SECRET_KEY: z.string().startsWith("sk_").optional(),
   STRIPE_WEBHOOK_SECRET: z.string().startsWith("whsec_").optional(),
+
+  /**
+   * Cloudflare R2 (Phase 6). All optional: documents are a feature the app
+   * degrades without — gate on `isR2Configured()`. R2 is S3-compatible, so
+   * these map directly onto `@aws-sdk/client-s3` credentials.
+   */
+  R2_ACCOUNT_ID: z.string().optional(),
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+  R2_BUCKET_NAME: z.string().optional(),
 });
 
 /** True when the Stripe API can be called (Checkout sessions, etc.). */
 export function isStripeConfigured(): boolean {
   return Boolean(env.STRIPE_SECRET_KEY);
+}
+
+/** True when R2 uploads/downloads can be issued. */
+export function isR2Configured(): boolean {
+  return Boolean(
+    env.R2_ACCOUNT_ID &&
+    env.R2_ACCESS_KEY_ID &&
+    env.R2_SECRET_ACCESS_KEY &&
+    env.R2_BUCKET_NAME,
+  );
 }
 
 // Treat empty strings as unset — `KEY=""` in a .env file is almost always a

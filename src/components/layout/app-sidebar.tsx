@@ -59,7 +59,7 @@ const NAV_ITEMS = [
     title: "Documents",
     href: "/dashboard/documents",
     icon: FileText,
-    enabled: false,
+    enabled: true,
   },
   {
     title: "Messages",

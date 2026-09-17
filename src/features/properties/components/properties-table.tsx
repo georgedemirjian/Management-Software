@@ -24,6 +24,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { PropertyFormDialog } from "@/features/properties/components/property-form-dialog";
 import { deleteProperty } from "@/features/properties/server/actions";
 import type { PropertyListItem } from "@/features/properties/server/queries";
+import { toSlugParam } from "@/lib/slug";
 
 type LlcOption = { id: string; name: string };
 
@@ -81,7 +82,7 @@ export function PropertiesTable({
                 <TableRow key={property.id}>
                   <TableCell className="font-medium">
                     <Link
-                      href={`/dashboard/properties/${property.id}`}
+                      href={`/dashboard/properties/${toSlugParam(property.name, property.id)}`}
                       className="hover:underline"
                     >
                       {property.name}
@@ -116,7 +117,7 @@ export function PropertiesTable({
                         <DropdownMenuItem
                           render={
                             <Link
-                              href={`/dashboard/properties/${property.id}`}
+                              href={`/dashboard/properties/${toSlugParam(property.name, property.id)}`}
                             />
                           }
                         >

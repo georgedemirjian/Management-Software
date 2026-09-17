@@ -27,6 +27,7 @@ import {
 } from "@/features/tenants/components/tenant-form-dialog";
 import { deleteTenant } from "@/features/tenants/server/actions";
 import type { TenantListItem } from "@/features/tenants/server/queries";
+import { toSlugParam } from "@/lib/slug";
 
 export function TenantsTable({ tenants }: { tenants: TenantListItem[] }) {
   const [formOpen, setFormOpen] = useState(false);
@@ -85,7 +86,7 @@ export function TenantsTable({ tenants }: { tenants: TenantListItem[] }) {
                 <TableRow key={tenant.id}>
                   <TableCell className="font-medium">
                     <Link
-                      href={`/dashboard/tenants/${tenant.id}`}
+                      href={`/dashboard/tenants/${toSlugParam(`${tenant.firstName} ${tenant.lastName}`, tenant.id)}`}
                       className="hover:underline"
                     >
                       {tenant.firstName} {tenant.lastName}
@@ -121,7 +122,9 @@ export function TenantsTable({ tenants }: { tenants: TenantListItem[] }) {
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem
                           render={
-                            <Link href={`/dashboard/tenants/${tenant.id}`} />
+                            <Link
+                              href={`/dashboard/tenants/${toSlugParam(`${tenant.firstName} ${tenant.lastName}`, tenant.id)}`}
+                            />
                           }
                         >
                           View details

@@ -16,7 +16,12 @@ export function Navbar() {
         </Link>
         <nav className="flex items-center gap-2">
           <ThemeToggle />
-          <Button variant="outline" size="sm" render={<Link href="/login" />}>
+          <Button
+            variant="outline"
+            size="sm"
+            nativeButton={false}
+            render={<Link href="/login" />}
+          >
             Sign in
           </Button>
         </nav>
