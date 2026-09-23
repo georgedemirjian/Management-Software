@@ -1,7 +1,6 @@
 "use client";
 
 import { LogOut } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -18,7 +17,6 @@ import {
 import { authClient } from "@/lib/auth-client";
 
 export function UserMenu({ name, email }: { name: string; email: string }) {
-  const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
 
   const initials =
@@ -35,9 +33,12 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
     setSigningOut(true);
     try {
       await authClient.signOut();
-      router.push("/login");
-      router.refresh();
-    } finally {
+      // Hard navigation to the marketing home page. A full reload guarantees
+      // the router/client cache is cleared, and `/` is outside the proxy
+      // matcher — a soft push to /login would be bounced back to /dashboard
+      // by the session guard while the just-cleared cookie still lingers.
+      window.location.href = "/";
+    } catch {
       setSigningOut(false);
     }
   }

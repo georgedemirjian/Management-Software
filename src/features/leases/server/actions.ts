@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 
 import { createLeaseSchema } from "@/features/leases/validation/lease";
 import {
@@ -12,7 +13,8 @@ import { ActionError, runOrgAction, type ActionResult } from "@/server/action";
 import { db } from "@/server/db";
 import type { OrgContext } from "@/server/auth-helpers";
 
-const noInputSchema = createLeaseSchema.partial();
+/** Actions that take only a leaseId (activate, delete) have no body to validate. */
+const noInputSchema = z.strictObject({});
 
 async function loadLease(ctx: OrgContext, leaseId: string) {
   const lease = await db.lease.findFirst({

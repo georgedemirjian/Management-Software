@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 
 import { createChargeSchema } from "@/features/payments/validation/charge";
 import { createPaymentSchema } from "@/features/payments/validation/payment";
@@ -13,6 +14,9 @@ import { db } from "@/server/db";
 import type { ChargeStatus } from "@/generated/prisma/enums";
 
 const TERMINAL_CHARGE_STATUSES: ChargeStatus[] = ["VOIDED", "WAIVED"];
+
+/** Actions that take only an id (waive/void) have no body to validate. */
+const noInputSchema = z.strictObject({});
 
 async function assertLeaseInOrg(organizationId: string, leaseId: string) {
   const lease = await db.lease.findFirst({
@@ -157,7 +161,7 @@ async function loadChargeForStatusChange(
 export async function waiveCharge(
   chargeId: string,
 ): Promise<ActionResult<null>> {
-  return runOrgAction(createChargeSchema.partial(), {}, async ({ ctx }) => {
+  return runOrgAction(noInputSchema, {}, async ({ ctx }) => {
     const charge = await loadChargeForStatusChange(
       ctx.organizationId,
       chargeId,
@@ -183,7 +187,7 @@ export async function waiveCharge(
 export async function voidCharge(
   chargeId: string,
 ): Promise<ActionResult<null>> {
-  return runOrgAction(createChargeSchema.partial(), {}, async ({ ctx }) => {
+  return runOrgAction(noInputSchema, {}, async ({ ctx }) => {
     const charge = await loadChargeForStatusChange(
       ctx.organizationId,
       chargeId,
@@ -213,7 +217,7 @@ export async function voidCharge(
 export async function voidPayment(
   paymentId: string,
 ): Promise<ActionResult<null>> {
-  return runOrgAction(createPaymentSchema.partial(), {}, async ({ ctx }) => {
+  return runOrgAction(noInputSchema, {}, async ({ ctx }) => {
     const payment = await db.payment.findFirst({
       where: { id: paymentId, organizationId: ctx.organizationId },
       select: { id: true, leaseId: true, status: true },
